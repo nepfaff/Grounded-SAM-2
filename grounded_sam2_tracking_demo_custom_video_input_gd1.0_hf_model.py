@@ -17,11 +17,8 @@ from utils.video_utils import create_video_from_images
 Hyperparam for Ground and Tracking
 """
 MODEL_ID = "IDEA-Research/grounding-dino-tiny"
-# VIDEO_PATH = "./assets/hippopotamus.mp4"
 VIDEO_PATH = "./assets/mustard_bottle_real.mp4"
-# TEXT_PROMPT = "hippopotamus."
 TEXT_PROMPT = "yellow mustard bottle." # NOTE: Need to add a dot ('.') at the end for this to work!
-# OUTPUT_VIDEO_PATH = "./hippopotamus_tracking_demo.mp4"
 OUTPUT_VIDEO_PATH = "./mustard_real.mp4"
 SOURCE_VIDEO_FRAME_DIR = "./custom_video_frames"
 SAVE_TRACKING_RESULTS_DIR = "./tracking_results"
