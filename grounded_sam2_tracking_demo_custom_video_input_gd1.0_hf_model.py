@@ -26,8 +26,12 @@ OUTPUT_VIDEO_PATH = "./mustard_real.mp4"
 SOURCE_VIDEO_FRAME_DIR = "./custom_video_frames"
 SAVE_TRACKING_RESULTS_DIR = "./tracking_results"
 SAVE_MASKS_DIR = "./masks"
-PROMPT_TYPE_FOR_VIDEO = "box" # choose from ["point", "box", "mask"]
-INPUT_VIDEO_STRIDE = 5 # The interval at which frames are sampled from the input image. Increase to sample coarser.
+PROMPT_TYPE_FOR_VIDEO = "point" # choose from ["point", "box", "mask"]
+# The interval at which frames are sampled from the input image. Increase to sample coarser.
+# Note that his might reduce quality and is thus not recommended. Try the offload options instead.
+INPUT_VIDEO_STRIDE = 1
+OFFLOAD_VIDEO_TO_CPU = True # Prevents OOM for large videos but is slower.
+OFFLOAD_STATE_TO_CPU = False
 
 """
 Step 1: Environment settings and model initialization for SAM 2
@@ -63,7 +67,8 @@ Custom video input directly using video files
 """
 video_info = sv.VideoInfo.from_video_path(VIDEO_PATH)  # get video info
 print(video_info)
-frame_generator = sv.get_video_frames_generator(VIDEO_PATH, stride=INPUT_VIDEO_STRIDE, start=0, end=None)
+# Ignore first frame as often lower quality.
+frame_generator = sv.get_video_frames_generator(VIDEO_PATH, stride=INPUT_VIDEO_STRIDE, start=1, end=None)
 
 # saving video to frames
 source_frames = Path(SOURCE_VIDEO_FRAME_DIR)
@@ -85,7 +90,11 @@ frame_names = [
 frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
 
 # init video predictor state
-inference_state = video_predictor.init_state(video_path=SOURCE_VIDEO_FRAME_DIR)
+inference_state = video_predictor.init_state(
+    video_path=SOURCE_VIDEO_FRAME_DIR,
+    offload_video_to_cpu=OFFLOAD_VIDEO_TO_CPU,
+    offload_state_to_cpu=OFFLOAD_STATE_TO_CPU,
+)
 
 ann_frame_idx = 0  # the frame index we interact with
 """
