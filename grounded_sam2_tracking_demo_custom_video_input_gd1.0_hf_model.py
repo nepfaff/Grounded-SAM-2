@@ -18,10 +18,14 @@ Hyperparam for Ground and Tracking
 """
 MODEL_ID = "IDEA-Research/grounding-dino-tiny"
 VIDEO_PATH = "./assets/hippopotamus.mp4"
+# VIDEO_PATH = "./assets/zebra.mp4"
 TEXT_PROMPT = "hippopotamus."
+# TEXT_PROMPT = "zebra"
 OUTPUT_VIDEO_PATH = "./hippopotamus_tracking_demo.mp4"
+# OUTPUT_VIDEO_PATH = "./zebra.mp4"
 SOURCE_VIDEO_FRAME_DIR = "./custom_video_frames"
 SAVE_TRACKING_RESULTS_DIR = "./tracking_results"
+SAVE_MASKS_DIR = "./masks"
 PROMPT_TYPE_FOR_VIDEO = "box" # choose from ["point", "box", "mask"]
 
 """
@@ -31,7 +35,8 @@ Step 1: Environment settings and model initialization for SAM 2
 torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
 
 if torch.cuda.get_device_properties(0).major >= 8:
-    # turn on tfloat32 for Ampere GPUs (https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices)
+    # turn on tfloat32 for Ampere GPUs
+    # (https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
@@ -104,6 +109,7 @@ confidences = results[0]["scores"].cpu().numpy().tolist()
 class_names = results[0]["labels"]
 
 print(input_boxes)
+assert len(input_boxes) > 0
 
 # prompt SAM image predictor to get the mask for the object
 image_predictor.set_image(np.array(image.convert("RGB")))
@@ -184,6 +190,13 @@ Step 5: Visualize the segment results across the video and save them
 if not os.path.exists(SAVE_TRACKING_RESULTS_DIR):
     os.makedirs(SAVE_TRACKING_RESULTS_DIR)
 
+SAVE_TRACKING_RESULTS_DIR_DEBUG = SAVE_TRACKING_RESULTS_DIR + "_debug"
+if not os.path.exists(SAVE_TRACKING_RESULTS_DIR_DEBUG):
+    os.makedirs(SAVE_TRACKING_RESULTS_DIR_DEBUG)
+    
+if not os.path.exists(SAVE_MASKS_DIR):
+    os.makedirs(SAVE_MASKS_DIR)
+
 ID_TO_OBJECTS = {i: obj for i, obj in enumerate(OBJECTS, start=1)}
 
 for frame_idx, segments in video_segments.items():
@@ -193,6 +206,17 @@ for frame_idx, segments in video_segments.items():
     masks = list(segments.values())
     masks = np.concatenate(masks, axis=0)
     
+    # Save masks.
+    union_mask = np.any(masks, axis=0)
+    union_mask_8bit = (union_mask.astype(np.uint8)) * 255
+    cv2.imwrite(os.path.join(SAVE_MASKS_DIR, f"mask_{frame_idx:05d}.png"), union_mask_8bit)
+    
+    # Create masked images.
+    mask_3d = np.stack([union_mask] * 3, axis=-1)  # Shape: (W, H, 3)
+    masked_image = np.where(mask_3d, img.copy(), 0)
+    cv2.imwrite(os.path.join(SAVE_TRACKING_RESULTS_DIR, f"masked_frame_{frame_idx:05d}.jpg"), masked_image)
+    
+    # Create debug overlay images.
     detections = sv.Detections(
         xyxy=sv.mask_to_xyxy(masks),  # (n, 4)
         mask=masks, # (n, h, w)
@@ -204,7 +228,7 @@ for frame_idx, segments in video_segments.items():
     annotated_frame = label_annotator.annotate(annotated_frame, detections=detections, labels=[ID_TO_OBJECTS[i] for i in object_ids])
     mask_annotator = sv.MaskAnnotator()
     annotated_frame = mask_annotator.annotate(scene=annotated_frame, detections=detections)
-    cv2.imwrite(os.path.join(SAVE_TRACKING_RESULTS_DIR, f"annotated_frame_{frame_idx:05d}.jpg"), annotated_frame)
+    cv2.imwrite(os.path.join(SAVE_TRACKING_RESULTS_DIR_DEBUG, f"annotated_frame_{frame_idx:05d}.jpg"), annotated_frame)
 
 
 """
@@ -212,3 +236,6 @@ Step 6: Convert the annotated frames to video
 """
 
 create_video_from_images(SAVE_TRACKING_RESULTS_DIR, OUTPUT_VIDEO_PATH)
+
+OUTPUT_VIDEO_PATH_DEBUG = OUTPUT_VIDEO_PATH[:-4] + "_debug.mp4"
+create_video_from_images(SAVE_TRACKING_RESULTS_DIR_DEBUG, OUTPUT_VIDEO_PATH_DEBUG)
