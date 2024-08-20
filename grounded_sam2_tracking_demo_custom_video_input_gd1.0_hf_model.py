@@ -17,16 +17,17 @@ from utils.video_utils import create_video_from_images
 Hyperparam for Ground and Tracking
 """
 MODEL_ID = "IDEA-Research/grounding-dino-tiny"
-VIDEO_PATH = "./assets/hippopotamus.mp4"
-# VIDEO_PATH = "./assets/zebra.mp4"
-TEXT_PROMPT = "hippopotamus."
-# TEXT_PROMPT = "zebra"
-OUTPUT_VIDEO_PATH = "./hippopotamus_tracking_demo.mp4"
-# OUTPUT_VIDEO_PATH = "./zebra.mp4"
+# VIDEO_PATH = "./assets/hippopotamus.mp4"
+VIDEO_PATH = "./assets/mustard_bottle_real.mp4"
+# TEXT_PROMPT = "hippopotamus."
+TEXT_PROMPT = "yellow mustard bottle." # NOTE: Need to add a dot ('.') at the end for this to work!
+# OUTPUT_VIDEO_PATH = "./hippopotamus_tracking_demo.mp4"
+OUTPUT_VIDEO_PATH = "./mustard_real.mp4"
 SOURCE_VIDEO_FRAME_DIR = "./custom_video_frames"
 SAVE_TRACKING_RESULTS_DIR = "./tracking_results"
 SAVE_MASKS_DIR = "./masks"
 PROMPT_TYPE_FOR_VIDEO = "box" # choose from ["point", "box", "mask"]
+INPUT_VIDEO_STRIDE = 5 # The interval at which frames are sampled from the input image. Increase to sample coarser.
 
 """
 Step 1: Environment settings and model initialization for SAM 2
@@ -43,6 +44,8 @@ if torch.cuda.get_device_properties(0).major >= 8:
 # init sam image predictor and video predictor model
 sam2_checkpoint = "./checkpoints/sam2_hiera_large.pt"
 model_cfg = "sam2_hiera_l.yaml"
+# sam2_checkpoint = "./checkpoints/sam2_hiera_tiny.pt"
+# model_cfg = "sam2_hiera_t.yaml"
 
 video_predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
 sam2_image_model = build_sam2(model_cfg, sam2_checkpoint)
@@ -60,7 +63,7 @@ Custom video input directly using video files
 """
 video_info = sv.VideoInfo.from_video_path(VIDEO_PATH)  # get video info
 print(video_info)
-frame_generator = sv.get_video_frames_generator(VIDEO_PATH, stride=1, start=0, end=None)
+frame_generator = sv.get_video_frames_generator(VIDEO_PATH, stride=INPUT_VIDEO_STRIDE, start=0, end=None)
 
 # saving video to frames
 source_frames = Path(SOURCE_VIDEO_FRAME_DIR)
