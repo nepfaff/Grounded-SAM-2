@@ -32,6 +32,7 @@ PROMPT_TYPE_FOR_VIDEO = "point" # choose from ["point", "box", "mask"]
 INPUT_VIDEO_STRIDE = 1
 OFFLOAD_VIDEO_TO_CPU = True # Prevents OOM for large videos but is slower.
 OFFLOAD_STATE_TO_CPU = False
+STARTING_FRAME = 80 # Frame number to start at
 
 """
 Step 1: Environment settings and model initialization for SAM 2
@@ -67,8 +68,9 @@ Custom video input directly using video files
 """
 video_info = sv.VideoInfo.from_video_path(VIDEO_PATH)  # get video info
 print(video_info)
-# Ignore first frame as often lower quality.
-frame_generator = sv.get_video_frames_generator(VIDEO_PATH, stride=INPUT_VIDEO_STRIDE, start=1, end=None)
+frame_generator = sv.get_video_frames_generator(
+    VIDEO_PATH, stride=INPUT_VIDEO_STRIDE, start=STARTING_FRAME, end=None
+)
 
 # saving video to frames
 source_frames = Path(SOURCE_VIDEO_FRAME_DIR)
@@ -154,6 +156,7 @@ if PROMPT_TYPE_FOR_VIDEO == "point":
     all_sample_points = sample_points_from_masks(masks=masks, num_points=10)
 
     for object_id, (label, points) in enumerate(zip(OBJECTS, all_sample_points), start=1):
+        # label one means positive (do mask), label zero means negative (don't mask)
         labels = np.ones((points.shape[0]), dtype=np.int32)
         _, out_obj_ids, out_mask_logits = video_predictor.add_new_points_or_box(
             inference_state=inference_state,
