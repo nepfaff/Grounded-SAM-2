@@ -3,7 +3,7 @@ import cv2
 import torch
 import numpy as np
 import supervision as sv
-
+from itertools import chain
 from pathlib import Path
 from tqdm import tqdm
 from PIL import Image
@@ -12,6 +12,7 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from utils.track_utils import sample_points_from_masks
 from utils.video_utils import create_video_from_images
+import glob
 
 """
 Hyperparam for Ground and Tracking
@@ -19,6 +20,8 @@ Hyperparam for Ground and Tracking
 MODEL_ID = "IDEA-Research/grounding-dino-tiny"
 VIDEO_PATH = "./assets/mustard_bottle_real.mp4"
 TEXT_PROMPT = "yellow mustard bottle." # NOTE: Need to add a dot ('.') at the end for this to work!
+NEGATIVE_TEXT_PROMT = "robot." # Prompt of what not to mask. Can be `None`.
+NUM_NEG_FRAMES = 3 # Number of frames to add negatives to (uniformly spaced). Increasing this might lead to OOM.
 OUTPUT_VIDEO_PATH = "./mustard_real.mp4"
 SOURCE_VIDEO_FRAME_DIR = "./custom_video_frames"
 SAVE_TRACKING_RESULTS_DIR = "./tracking_results"
@@ -73,6 +76,7 @@ frame_generator = sv.get_video_frames_generator(
 source_frames = Path(SOURCE_VIDEO_FRAME_DIR)
 source_frames.mkdir(parents=True, exist_ok=True)
 
+frame_count = 0
 with sv.ImageSink(
     target_dir_path=source_frames, 
     overwrite=True, 
@@ -80,6 +84,7 @@ with sv.ImageSink(
 ) as sink:
     for frame in tqdm(frame_generator, desc="Saving Video Frames"):
         sink.save_image(frame)
+        frame_count +=1
 
 # scan all the JPEG frame names in this directory
 frame_names = [
@@ -101,34 +106,41 @@ Step 2: Prompt Grounding DINO 1.5 with Cloud API for box coordinates
 """
 
 # prompt grounding dino to get the box coordinates on specific frame
-img_path = os.path.join(SOURCE_VIDEO_FRAME_DIR, frame_names[ann_frame_idx])
-image = Image.open(img_path)
-inputs = processor(images=image, text=TEXT_PROMPT, return_tensors="pt").to(device)
-with torch.no_grad():
-    outputs = grounding_model(**inputs)
+def get_dino_boxes(text, frame_idx):
+    img_path = os.path.join(SOURCE_VIDEO_FRAME_DIR, frame_names[frame_idx])
+    image = Image.open(img_path)
 
-results = processor.post_process_grounded_object_detection(
-    outputs,
-    inputs.input_ids,
-    box_threshold=0.4,
-    text_threshold=0.3,
-    target_sizes=[image.size[::-1]]
-)
+    inputs = processor(images=image, text=text, return_tensors="pt").to(device)
+    with torch.no_grad():
+        outputs = grounding_model(**inputs)
 
-input_boxes = results[0]["boxes"].cpu().numpy()
-confidences = results[0]["scores"].cpu().numpy().tolist()
-class_names = results[0]["labels"]
+    results = processor.post_process_grounded_object_detection(
+        outputs,
+        inputs.input_ids,
+        box_threshold=0.4,
+        text_threshold=0.3,
+        target_sizes=[image.size[::-1]]
+    )
+
+    input_boxes = results[0]["boxes"].cpu().numpy()
+    confidences = results[0]["scores"].cpu().numpy().tolist()
+    class_names = results[0]["labels"]
+    return input_boxes, confidences, class_names
+
+input_boxes, confidences, class_names = get_dino_boxes(TEXT_PROMPT, ann_frame_idx)
 
 print(input_boxes)
-assert len(input_boxes) > 0
+assert len(input_boxes) > 0, "No results found for the text prompt. Make sure that the prompt ends with a dot '.'!"
 
 # prompt SAM image predictor to get the mask for the object
+img_path = os.path.join(SOURCE_VIDEO_FRAME_DIR, frame_names[ann_frame_idx])
+image = Image.open(img_path)
 image_predictor.set_image(np.array(image.convert("RGB")))
 
 # process the detection results
 OBJECTS = class_names
 
-print(OBJECTS)
+print("pos objects", OBJECTS)
 
 # prompt SAM 2 image predictor to get the mask for the object
 masks, scores, logits = image_predictor.predict(
@@ -184,6 +196,54 @@ elif PROMPT_TYPE_FOR_VIDEO == "mask":
 else:
     raise NotImplementedError("SAM 2 video predictor only support point/box/mask prompts")
 
+if NEGATIVE_TEXT_PROMT is not None:
+    image_predictor.reset_predictor()
+    
+    neg_id_start_orig = neg_id_start = object_id+1
+    for idx in tqdm(
+        np.linspace(0, frame_count - 1, NUM_NEG_FRAMES, dtype=int), desc="Adding negative", leave=False
+    ):
+        neg_input_boxes, _, neg_class_names = get_dino_boxes(NEGATIVE_TEXT_PROMT, idx)
+        if len(neg_input_boxes) == 0:
+            continue
+        
+        img_path = os.path.join(SOURCE_VIDEO_FRAME_DIR, frame_names[idx])
+        image = Image.open(img_path)
+        image_predictor.set_image(np.array(image.convert("RGB")))
+
+        neg_masks, _, _ = image_predictor.predict(
+            point_coords=None,
+            point_labels=None,
+            box=neg_input_boxes,
+            multimask_output=False,
+        )
+        # convert the mask shape to (n, H, W)
+        if neg_masks.ndim == 4:
+            neg_masks = neg_masks.squeeze(1)
+            
+        # sample the negative points from mask for each objects
+        num_points = 1
+        neg_all_sample_points = sample_points_from_masks(masks=neg_masks, num_points=num_points)
+
+        for object_id, (label, points) in enumerate(
+            zip(neg_class_names, neg_all_sample_points), start=neg_id_start
+        ):
+            # label one means positive (do mask), label zero means negative (don't mask)
+            labels = np.zeros((points.shape[0]), dtype=np.int32)
+            _, _, _ = video_predictor.add_new_points_or_box(
+                inference_state=inference_state,
+                frame_idx=ann_frame_idx,
+                obj_id=object_id,
+                points=points,
+                labels=labels,
+            )
+        
+        neg_id_start += num_points
+        image_predictor.reset_predictor()
+        
+# Clear GPU memory.
+image_predictor.model.cpu()
+del image_predictor
 
 """
 Step 4: Propagate the video predictor to get the segmentation results for each frame
@@ -208,14 +268,30 @@ if not os.path.exists(SAVE_TRACKING_RESULTS_DIR_DEBUG):
     
 if not os.path.exists(SAVE_MASKS_DIR):
     os.makedirs(SAVE_MASKS_DIR)
+    
+for dir in [SAVE_TRACKING_RESULTS_DIR, SAVE_TRACKING_RESULTS_DIR_DEBUG, SAVE_MASKS_DIR]:
+    png_files = glob.glob(os.path.join(dir, '*.png'))
+    jpg_files = glob.glob(os.path.join(dir, '*.jpg'))
+
+    # Loop through the list of .png files and delete them.
+    for file in chain(png_files, jpg_files):
+        try:
+            os.remove(file)
+        except Exception as e:
+            print(f'Error deleting {file}: {e}')
 
 ID_TO_OBJECTS = {i: obj for i, obj in enumerate(OBJECTS, start=1)}
 
 for frame_idx, segments in video_segments.items():
     img = cv2.imread(os.path.join(SOURCE_VIDEO_FRAME_DIR, frame_names[frame_idx]))
     
-    object_ids = list(segments.keys())
-    masks = list(segments.values())
+    if NEGATIVE_TEXT_PROMT is not None:
+        pos_segments = {k: v for k, v in segments.items() if k < neg_id_start_orig}
+    else:
+        pos_segments = segments
+    
+    object_ids = list(pos_segments.keys())
+    masks = list(pos_segments.values())
     masks = np.concatenate(masks, axis=0)
     
     # Save masks.
