@@ -71,6 +71,8 @@ Install `Segment Anything 2`:
 pip install -e .
 ```
 
+**NOTE:** If this fails, manually install the required dependencies and everything should run, even when not using `pip isntall -e .` and `pip install --no-build-isolation -e grounding_dino`.
+
 Install `Grounding DINO`:
 
 ```bash
